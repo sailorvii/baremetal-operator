@@ -187,12 +187,12 @@ generate: $(CONTROLLER_GEN) ## Generate code
 
 .PHONY: docker
 docker: generate manifests ## Build the docker image
-	docker build . -t ${IMG}
+	sudo docker build . -t ${IMG}
 
 # Push the docker image
 .PHONY: docker-push
 docker-push:
-	docker push ${IMG}
+	sudo docker push ${IMG}
 
 ## --------------------------------------
 ## CI Targets

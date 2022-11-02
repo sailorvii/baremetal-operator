@@ -325,6 +325,20 @@ func (p *fixtureProvisioner) PowerOff(rebootMode metal3v1alpha1.RebootMode, forc
 	return result, nil
 }
 
+func (p *fixtureProvisioner) Reboot(rebootMode metal3v1alpha1.RebootMode, force bool) (result provisioner.Result, err error) {
+	p.log.Info("ensuring host is reboot")
+
+	if p.state.poweredOn {
+		p.publisher("PowerOff", "Host powered off")
+		p.log.Info("changing status")
+		p.state.poweredOn = false
+		result.Dirty = true
+		return result, nil
+	}
+
+	return result, nil
+}
+
 // IsReady returns the current availability status of the provisioner
 func (p *fixtureProvisioner) IsReady() (result bool, err error) {
 	p.log.Info("checking provisioner status")

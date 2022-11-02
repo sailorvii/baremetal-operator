@@ -1291,6 +1291,10 @@ func (m *mockProvisioner) PowerOff(rebootMode metal3v1alpha1.RebootMode, force b
 	return m.getNextResultByMethod("PowerOff"), err
 }
 
+func (m *mockProvisioner) Reboot(rebootMode metal3v1alpha1.RebootMode, force bool) (result provisioner.Result, err error) {
+	return m.getNextResultByMethod("Reboot"), err
+}
+
 func (m *mockProvisioner) IsReady() (result bool, err error) {
 	return
 }

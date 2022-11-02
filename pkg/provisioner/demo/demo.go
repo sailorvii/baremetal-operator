@@ -349,6 +349,25 @@ func (p *demoProvisioner) PowerOff(rebootMode metal3v1alpha1.RebootMode, force b
 	// return result, nil
 }
 
+func (p *demoProvisioner) Reboot(rebootMode metal3v1alpha1.RebootMode, force bool) (result provisioner.Result, err error) {
+
+	hostName := p.objectMeta.Name
+	switch hostName {
+	default:
+		return result, nil
+	}
+
+	// p.log.Info("ensuring host is powered off")
+
+	// if p.host.Status.PoweredOn {
+	// 	p.host.Status.PoweredOn = false
+	// 	result.Dirty = true
+	// 	return result, nil
+	// }
+
+	// return result, nil
+}
+
 // IsReady always returns true for the demo provisioner
 func (p *demoProvisioner) IsReady() (result bool, err error) {
 	return true, nil

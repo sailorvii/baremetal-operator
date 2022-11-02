@@ -117,6 +117,47 @@ spec:
                 - UEFISecureBoot
                 - legacy
                 type: string
+              bootVolume:
+                description: boot from remote volume configuration
+                properties:
+                  connectorId:
+                    type: string
+                  iscsiTarget:
+                    properties:
+                      authMethod:
+                        type: string
+                      authPasswd:
+                        type: string
+                      authUser:
+                        type: string
+                      iType:
+                        type: string
+                      iqn:
+                        type: string
+                      lun:
+                        type: string
+                      portal:
+                        type: string
+                    required:
+                    - iType
+                    - iqn
+                    - lun
+                    - portal
+                    type: object
+                  targetType:
+                    type: string
+                  volumeDriver:
+                    description: 'VolumeDriver: cinder or external'
+                    type: string
+                  volumeId:
+                    description: volume id in your volume driver system
+                    type: string
+                required:
+                - connectorId
+                - targetType
+                - volumeDriver
+                - volumeId
+                type: object
               consumerRef:
                 description: ConsumerRef can be used to store information about something
                   that is using a host. When it is not empty, the host is considered
@@ -798,7 +839,7 @@ spec:
                     type: string
                   bootMode:
                     description: BootMode indicates the boot mode used to provision
-                      the node
+                      the node.
                     enum:
                     - UEFI
                     - UEFISecureBoot
@@ -816,7 +857,7 @@ spec:
                     - method
                     type: object
                   firmware:
-                    description: The Bios set by the user
+                    description: The Bios set by the user.
                     properties:
                       simultaneousMultithreadingEnabled:
                         description: 'Allows a single physical processor core to appear
@@ -878,7 +919,7 @@ spec:
                     - url
                     type: object
                   raid:
-                    description: The Raid set by the user
+                    description: The Raid set by the user.
                     properties:
                       hardwareRAIDVolumes:
                         description: The list of logical disks for hardware RAID,
@@ -1031,7 +1072,7 @@ spec:
                         type: array
                     type: object
                   rootDeviceHints:
-                    description: The RootDevicehints set by the user
+                    description: The RootDevicehints set by the user.
                     properties:
                       deviceName:
                         description: A Linux device name like "/dev/vda". The hint
@@ -1074,6 +1115,10 @@ spec:
                           appended. The hint must match the actual value exactly.
                         type: string
                     type: object
+                  startTime:
+                    description: StartTime record the start time for overtime process.
+                    format: date-time
+                    type: string
                   state:
                     description: An indiciator for what the provisioner is doing with
                       the host.

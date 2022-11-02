@@ -11,6 +11,7 @@ import (
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack/baremetal/v1/nodes"
 	"github.com/gophercloud/gophercloud/openstack/baremetal/v1/ports"
+	bmvolume "github.com/gophercloud/gophercloud/openstack/baremetal/v1/volume"
 	"github.com/gophercloud/gophercloud/openstack/baremetalintrospection/v1/introspection"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +39,8 @@ const (
 	powerOn              = string(nodes.PowerOn)
 	powerOff             = string(nodes.PowerOff)
 	softPowerOff         = string(nodes.SoftPowerOff)
+	softReboot           = string(nodes.SoftRebooting)
+	reboot               = string(nodes.Rebooting)
 	powerNone            = "None"
 	nameSeparator        = "~"
 	customDeployPriority = 80
@@ -465,6 +468,7 @@ func (p *ironicProvisioner) ValidateManagementAccess(data provisioner.Management
 	if !success {
 		return
 	}
+
 	// ironicNode, err = nodes.Get(p.client, p.status.ID).Extract()
 	// if err != nil {
 	// 	return result, errors.Wrap(err, "failed to get provisioning state in ironic")
@@ -620,6 +624,38 @@ func setDeployImage(driverInfo map[string]interface{}, config ironicConfig, acce
 	}
 
 	return nil
+}
+
+// add volume connector create for Boot-From-Volume
+func (p *ironicProvisioner) tryCreateConnector(connectorOpts *bmvolume.CreateConnectorOpts) (success bool, result provisioner.Result, err error) {
+	p.log.Info("begin create node volume connector in ironic")
+	err = bmvolume.CreateConnector(p.client, connectorOpts).Err
+	switch err.(type) {
+	case nil:
+		success = true
+	case gophercloud.ErrDefault409:
+		p.log.Info("could not create volume connector in ironic, busy")
+		result, err = retryAfterDelay(provisionRequeueDelay)
+	default:
+		result, err = transientError(errors.Wrap(err, "failed to create volume connector in ironic"))
+	}
+	return
+}
+
+// add volume target create for Boot-From-Volume
+func (p *ironicProvisioner) tryCreateTarget(targetOpts *bmvolume.CreateTargetOpts) (success bool, result provisioner.Result, err error) {
+	p.log.Info("begin create node volume target in ironic")
+	err = bmvolume.CreateTarget(p.client, targetOpts).Err
+	switch err.(type) {
+	case nil:
+		success = true
+	case gophercloud.ErrDefault409:
+		p.log.Info("could not create volume target in ironic, busy")
+		result, err = retryAfterDelay(provisionRequeueDelay)
+	default:
+		result, err = transientError(errors.Wrap(err, "failed to create volume target in ironic"))
+	}
+	return
 }
 
 func (p *ironicProvisioner) tryUpdateNode(ironicNode *nodes.Node, updater *nodeUpdater) (success bool, result provisioner.Result, err error) {
@@ -1022,18 +1058,120 @@ func buildCapabilitiesValue(ironicNode *nodes.Node, bootMode metal3v1alpha1.Boot
 	return strings.Join(filteredCapabilities, ",")
 }
 
+// add Boot-From-Volume(BFV) node settings
+func setNodeWhenIscsiBFV(p *ironicProvisioner, ironicNode *nodes.Node, data provisioner.ProvisionData) error {
+	updater := updateOptsBuilder(p.debugLog)
+	// storage_interface: noop, cinder, external
+	updater.SetTopLevelOpt("storage_interface", string(data.BootVolume.VolumeDriver), ironicNode.StorageInterface)
+	opts := optionsData{
+		"capabilities": "iscsi_boot:True",
+	}
+	updater.SetPropertiesOpts(opts, ironicNode)
+	_, _, err := p.tryUpdateNode(ironicNode, updater)
+	if err != nil {
+		p.log.Error(err, "update node settings for iscsi boot from volume error")
+		return err
+	}
+
+	return nil
+}
+
+// add Boot-From-Volume(BFV) node unsettings
+// ensure this unset after create connector and target
+func unSetNodeWhenIscsiBFV(p *ironicProvisioner, ironicNode *nodes.Node, data provisioner.ProvisionData) error {
+	updater := updateOptsBuilder(p.debugLog)
+	// Remove   image_source, root_gb, kernel, ramdisk fields
+	opts := optionsData{
+		"image_source": nil,
+		"root_gb":      nil,
+		"kernel":       nil,
+		"ramdisk":      nil,
+	}
+	updater.SetInstanceInfoOpts(opts, ironicNode)
+	_, _, err := p.tryUpdateNode(ironicNode, updater)
+	if err != nil {
+		p.log.Error(err, "update node unsettings for iscsi boot from volume error")
+		return err
+	}
+	return nil
+}
+
+// add iscsi connector target for Boot-From-Volume
+func (p *ironicProvisioner) createIscsiConnectorTarget(ironicNode *nodes.Node, data provisioner.ProvisionData) error {
+	err := setNodeWhenIscsiBFV(p, ironicNode, data)
+	if err != nil {
+		p.log.Error(err, "set node volume properties error when in createIscsiConnectorTarget")
+		return err
+	}
+	connectorID := data.BootVolume.ConnectorId
+	createConnectorOpts := &bmvolume.CreateConnectorOpts{}
+	createConnectorOpts.NodeUUID = ironicNode.UUID
+	createConnectorOpts.ConnectorType = data.BootVolume.IscsiTarget.IType
+	createConnectorOpts.ConnectorId = connectorID
+	_, _, err = p.tryCreateConnector(createConnectorOpts)
+	if err != nil {
+		p.log.Error(err, "create connector error when in createIscsiConnectorTarget")
+		return err
+	}
+	createTargetOpts := &bmvolume.CreateTargetOpts{}
+	createTargetOpts.BootIndex = 0
+	createTargetOpts.NodeUUID = ironicNode.UUID
+	createTargetOpts.VolumeId = data.BootVolume.VolumeId
+	createTargetOpts.VolumeType = "iscsi"
+	if data.BootVolume.VolumeDriver == metal3v1alpha1.External {
+		var properties = map[string]interface{}{}
+		properties["target_iqn"] = data.BootVolume.IscsiTarget.Iqn
+		properties["target_lun"] = data.BootVolume.IscsiTarget.Lun
+		properties["target_portal"] = data.BootVolume.IscsiTarget.Portal
+		properties["auth_method"] = data.BootVolume.IscsiTarget.AuthMethod
+		properties["auth_username"] = data.BootVolume.IscsiTarget.AuthUser
+		properties["auth_password"] = data.BootVolume.IscsiTarget.AuthPasswd
+		createTargetOpts.Properties = properties
+	}
+	_, _, terr := p.tryCreateTarget(createTargetOpts)
+	if terr != nil {
+		p.log.Error(terr, "create target error when in createIscsiConnectorTarget:")
+		return terr
+	}
+	err = unSetNodeWhenIscsiBFV(p, ironicNode, data)
+	if err != nil {
+		return err
+	}
+	p.log.Info("create iscsi connector and target ok")
+	return nil
+}
+
+// add Volume Connector and Target Create for Boot-From-Volume
+func (p *ironicProvisioner) createConnectorTarget(ironicNode *nodes.Node, data provisioner.ProvisionData) error {
+	switch data.BootVolume.TargetType {
+	case metal3v1alpha1.ISCSI:
+		err := p.createIscsiConnectorTarget(ironicNode, data)
+		if err != nil {
+			return err
+		}
+		p.log.Info("sucessfully create connector target for boot from volume before provisioning")
+		return nil
+	default:
+		return fmt.Errorf("no this baremetal volume connectorType")
+	}
+}
+
 func (p *ironicProvisioner) setUpForProvisioning(ironicNode *nodes.Node, data provisioner.ProvisionData) (result provisioner.Result, err error) {
-
 	p.log.Info("starting provisioning", "node properties", ironicNode.Properties)
-
 	success, result, err := p.tryUpdateNode(ironicNode,
 		p.getUpdateOptsForNode(ironicNode, data))
 	if !success {
 		return
 	}
-
+	// if has BootVolume settings, then do node settings
+	if data.BootVolume != nil && len(data.BootVolume.VolumeId) > 0 && len(data.BootVolume.VolumeDriver) > 0 {
+		err = p.createConnectorTarget(ironicNode, data)
+		if err != nil {
+			p.log.Error(err, "create connector target error when has BootVolume")
+			return
+		}
+	}
 	p.log.Info("validating host settings")
-
 	errorMessage, err := p.validateNode(ironicNode)
 	switch err.(type) {
 	case nil:
@@ -1820,6 +1958,41 @@ func (p *ironicProvisioner) PowerOff(rebootMode metal3v1alpha1.RebootMode, force
 		}
 		// Reboot mode is hard, force flag is set, or soft power off is not supported
 		return p.changePower(ironicNode, nodes.PowerOff)
+	}
+
+	return operationComplete()
+}
+
+// Reboot.
+func (p *ironicProvisioner) Reboot(rebootMode metal3v1alpha1.RebootMode, force bool) (result provisioner.Result, err error) {
+	ironicNode, err := p.getNode()
+	if err != nil {
+		return transientError(err)
+	}
+	p.log.Info("Reboot node", "node", ironicNode.Name, "mode", rebootMode)
+
+	if ironicNode.PowerState != powerOff {
+		targetState := ironicNode.TargetPowerState
+		// If the target state is either reboot or softReboot, then we should wait
+		if targetState == reboot || targetState == softReboot {
+			p.log.Info("waiting for reboot status to change")
+			return operationContinuing(powerRequeueDelay)
+		}
+		// If the target state is unset while the last error is set,
+		// then the last execution of power off has failed.
+		if targetState == "" && ironicNode.LastError != "" && !force {
+			p.log.Info("reboot error", "msg", ironicNode.LastError)
+			return operationFailed(ironicNode.LastError)
+		}
+
+		if rebootMode == metal3v1alpha1.RebootModeSoft && !force {
+			result, err = p.changePower(ironicNode, nodes.SoftRebooting)
+			if err != nil {
+				return result, err
+			}
+		}
+		// Reboot mode is hard, force flag is set.
+		return p.changePower(ironicNode, nodes.Rebooting)
 	}
 
 	return operationComplete()

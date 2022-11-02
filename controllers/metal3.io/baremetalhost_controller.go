@@ -484,6 +484,7 @@ func isRebootAnnotation(annotation string) bool {
 
 // clearRebootAnnotations deletes all reboot annotations exist on the provided host
 func clearRebootAnnotations(host *metal3v1alpha1.BareMetalHost) (dirty bool) {
+	dirty = false
 	for annotation := range host.Annotations {
 		if isRebootAnnotation(annotation) {
 			delete(host.Annotations, annotation)
@@ -1159,6 +1160,7 @@ func (r *BareMetalHostReconciler) actionProvisioning(prov provisioner.Provisione
 		BootMode:        info.host.Status.Provisioning.BootMode,
 		HardwareProfile: hwProf,
 		RootDeviceHints: info.host.Status.Provisioning.RootDeviceHints.DeepCopy(),
+		BootVolume:      info.host.Spec.BootVolume,
 	})
 	if err != nil {
 		return actionError{errors.Wrap(err, "failed to provision")}
@@ -1285,24 +1287,15 @@ func (r *BareMetalHostReconciler) manageHostPower(prov provisioner.Provisioner, 
 	desiredPowerOnState := info.host.Spec.Online
 
 	if !info.host.Status.PoweredOn {
-		if _, suffixlessAnnotationExists := info.host.Annotations[rebootAnnotationPrefix]; suffixlessAnnotationExists {
-			delete(info.host.Annotations, rebootAnnotationPrefix)
-
+		if clearRebootAnnotations(info.host) {
 			if err = r.Update(context.TODO(), info.host); err != nil {
-				return actionError{errors.Wrap(err, "failed to remove reboot annotation from host")}
+				return actionError{errors.Wrap(err, "failed to remove reboot annotations from host")}
 			}
-
 			return actionContinue{}
 		}
 	}
 
-	provState := info.host.Status.Provisioning.State
-	isProvisioned := provState == metal3v1alpha1.StateProvisioned || provState == metal3v1alpha1.StateExternallyProvisioned
-
-	desiredReboot, desiredRebootMode := hasRebootAnnotation(info)
-	if desiredReboot && isProvisioned {
-		desiredPowerOnState = false
-	}
+	_, desiredRebootMode := hasRebootAnnotation(info)
 
 	// Power state needs to be monitored regularly, so if we leave
 	// this function without an error we always want to requeue after
@@ -1363,6 +1356,47 @@ func (r *BareMetalHostReconciler) manageHostPower(prov provisioner.Provisioner, 
 	return actionUpdate{steadyStateResult}
 }
 
+func (r *BareMetalHostReconciler) manageHostReboot(prov provisioner.Provisioner, info *reconcileInfo) actionResult {
+	var provResult provisioner.Result
+
+	desiredReboot, desiredRebootMode := hasRebootAnnotation(info)
+	if !desiredReboot {
+		return actionContinue{}
+	}
+
+	if info.host.Status.ErrorCount > 0 {
+		desiredRebootMode = metal3v1alpha1.RebootModeHard
+	}
+
+	provResult, err := prov.Reboot(desiredRebootMode, info.host.Status.ErrorType == metal3v1alpha1.PowerManagementError)
+	if err != nil {
+		return actionError{errors.Wrap(err, "failed to reboot host")}
+	}
+	if provResult.ErrorMessage != "" {
+		return recordActionFailure(info, metal3v1alpha1.PowerManagementError, provResult.ErrorMessage)
+	}
+	info.log.Info("Reboot host", "host", info.host.Name)
+	if provResult.Dirty {
+		if provResult.ErrorMessage == "" {
+			info.host.Status.ErrorCount = 0
+			if clearRebootAnnotations(info.host) {
+				if err = r.Update(context.TODO(), info.host); err != nil {
+					return actionError{errors.Wrap(err, "failed to remove reboot annotations from host")}
+				}
+				return actionContinue{}
+			}
+		}
+		result := actionContinue{provResult.RequeueAfter}
+		if clearError(info.host) {
+			return actionUpdate{result}
+		}
+		return result
+	}
+
+	steadyStateResult := actionContinue{time.Second * 60}
+	return actionUpdate{steadyStateResult}
+}
+
 // A host reaching this action handler should be provisioned or externally
 // provisioned -- a state that it will stay in until the user takes further
 // action. We use the Adopt() API to make sure that the provisioner is aware of
@@ -1385,7 +1419,11 @@ func (r *BareMetalHostReconciler) actionManageSteadyState(prov provisioner.Provi
 		return result
 	}
 
-	return r.manageHostPower(prov, info)
+	result := r.manageHostPower(prov, info)
+	if result.Dirty() {
+		return result
+	}
+	return r.manageHostReboot(prov, info)
 }
 
 // A host reaching this action handler should be available -- a state that
@@ -1397,7 +1435,11 @@ func (r *BareMetalHostReconciler) actionManageAvailable(prov provisioner.Provisi
 		clearError(info.host)
 		return actionComplete{}
 	}
-	return r.manageHostPower(prov, info)
+	result := r.manageHostPower(prov, info)
+	if result.Dirty() {
+		return result
+	}
+	return r.manageHostReboot(prov, info)
 }
 
 func getHostProvisioningSettings(host *metal3v1alpha1.BareMetalHost, info *reconcileInfo) (dirty bool, status *metal3v1alpha1.BareMetalHostStatus, err error) {

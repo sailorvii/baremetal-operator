@@ -353,6 +353,10 @@ type BareMetalHostSpec struct {
 	// +optional
 	BootMode BootMode `json:"bootMode,omitempty"`
 
+	// +optional
+	// boot from remote volume configuration
+	BootVolume *BootVolume `json:"bootVolume,omitempty"`
+
 	// Which MAC address will PXE boot? This is optional for some
 	// types, but required for libvirt VMs driven by vbmc.
 	// +kubebuilder:validation:Pattern=`[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}`
@@ -433,6 +437,40 @@ const (
 	// SHA512 checksum type
 	SHA512 ChecksumType = "sha512"
 )
+
+type BootVolume struct {
+	// volume id in your volume driver system
+	VolumeId string `json:"volumeId"`
+	// VolumeDriver: cinder or external
+	VolumeDriver VolumeDriver `json:"volumeDriver"`
+	ConnectorId  string       `json:"connectorId"` // e.g. iqn.2010-10.openstack.org.{nodeId}
+	TargetType   TargetType   `json:"targetType"`  // e.g. iscsi
+	IscsiTarget  IscsiTarget  `json:"iscsiTarget,omitempty"`
+}
+
+type VolumeDriver string
+
+const (
+	Cinder   VolumeDriver = "cinder"
+	External VolumeDriver = "external"
+)
+
+type TargetType string
+
+const (
+	ISCSI TargetType = "iscsi"
+	// you can add another target  type below, e.g. http or  Fibre-Channel....
+)
+
+type IscsiTarget struct {
+	AuthUser   string `json:"authUser,omitempty"`
+	AuthPasswd string `json:"authPasswd,omitempty"`
+	AuthMethod string `json:"authMethod,omitempty"` // e.g. CHAP
+	Iqn        string `json:"iqn"`                  // e.g. iqn.2020-10.openstack.com.{nodeId}
+	Lun        string `json:"lun"`                  // e.g. 1
+	Portal     string `json:"portal"`               // e.g. 127.0.0.1:3260
+	IType      string `json:"iType"`                //e.g. iqn , ip, wwnn,wwpn
+}
 
 // Image holds the details of an image either to provisioned or that
 // has been provisioned.
@@ -763,20 +801,23 @@ type ProvisionStatus struct {
 	// provisioned to the host.
 	Image Image `json:"image,omitempty"`
 
-	// The RootDevicehints set by the user
+	// The RootDevicehints set by the user.
 	RootDeviceHints *RootDeviceHints `json:"rootDeviceHints,omitempty"`
 
-	// BootMode indicates the boot mode used to provision the node
+	// BootMode indicates the boot mode used to provision the node.
 	BootMode BootMode `json:"bootMode,omitempty"`
 
-	// The Raid set by the user
+	// The Raid set by the user.
 	RAID *RAIDConfig `json:"raid,omitempty"`
 
-	// The Bios set by the user
+	// The Bios set by the user.
 	Firmware *FirmwareConfig `json:"firmware,omitempty"`
 
 	// Custom deploy procedure applied to the host.
 	CustomDeploy *CustomDeploy `json:"customDeploy,omitempty"`
+
+	// StartTime record the start time for overtime process.
+	StartTime *metav1.Time `json:"startTime,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -908,7 +949,20 @@ func (host *BareMetalHost) NeedsProvisioning() bool {
 		return false
 	}
 
-	return host.hasNewImage() || host.hasNewCustomDeploy()
+	return host.hasNewImage() || host.hasNewCustomDeploy() || host.HasBootVolume()
+}
+
+// add if has BootVolume, image setting can be ignored
+func (host *BareMetalHost) HasBootVolume() bool {
+	if host.Spec.BootVolume == nil {
+		return false
+	}
+	volId := host.Spec.BootVolume.VolumeId
+	volDriver := host.Spec.BootVolume.VolumeDriver
+	if len(volId) > 0 && len(volDriver) > 0 {
+		return true
+	}
+	return false
 }
 
 func (host *BareMetalHost) hasNewImage() bool {

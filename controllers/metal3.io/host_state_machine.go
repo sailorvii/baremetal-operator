@@ -448,8 +448,8 @@ func (hsm *hostStateMachine) provisioningCancelled() bool {
 	} else if hsm.Host.Status.Provisioning.CustomDeploy != nil && hsm.Host.Status.Provisioning.CustomDeploy.Method != "" {
 		return true
 	}
-
-	return hsm.imageProvisioningCancelled()
+	// add if has BootVolume, image setting can be ignored
+	return hsm.imageProvisioningCancelled() && !hsm.Host.HasBootVolume()
 }
 
 func (hsm *hostStateMachine) imageProvisioningCancelled() bool {
@@ -485,7 +485,7 @@ func (hsm *hostStateMachine) handleProvisioning(info *reconcileInfo) actionResul
 func (hsm *hostStateMachine) handleProvisioned(info *reconcileInfo) actionResult {
 	if hsm.provisioningCancelled() {
 		hsm.NextState = metal3v1alpha1.StateDeprovisioning
-		return actionComplete{}
+		return actionUpdate{}
 	}
 
 	// ErrorCount is cleared when appropriate inside actionManageSteadyState
@@ -524,6 +524,7 @@ func (hsm *hostStateMachine) handleDeprovisioning(info *reconcileInfo) actionRes
 				// delete.
 				return skipToDelete()
 			}
+			return skipToDelete()
 		}
 	}
 	return actResult

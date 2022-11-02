@@ -105,6 +105,7 @@ type PrepareData struct {
 	ActualFirmwareSettings metal3v1alpha1.SettingsMap
 }
 
+// add boot-from-volume configuration
 type ProvisionData struct {
 	Image           metal3v1alpha1.Image
 	HostConfig      HostConfigData
@@ -112,6 +113,7 @@ type ProvisionData struct {
 	HardwareProfile hardware.Profile
 	RootDeviceHints *metal3v1alpha1.RootDeviceHints
 	CustomDeploy    *metal3v1alpha1.CustomDeploy
+	BootVolume      *metal3v1alpha1.BootVolume
 }
 
 type HTTPHeaders []map[string]string
@@ -181,6 +183,9 @@ type Provisioner interface {
 	// provisioning operation. The boolean argument may be used to specify
 	// if a hard reboot (force power off) is required - true if so.
 	PowerOff(rebootMode metal3v1alpha1.RebootMode, force bool) (result Result, err error)
+
+	// Reboot .
+	Reboot(rebootMode metal3v1alpha1.RebootMode, force bool) (result Result, err error)
 
 	// IsReady checks if the provisioning backend is available to accept
 	// all the incoming requests.
