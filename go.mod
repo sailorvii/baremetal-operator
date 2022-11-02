@@ -73,4 +73,4 @@ replace github.com/metal3-io/baremetal-operator/apis => ./apis
 
 replace github.com/metal3-io/baremetal-operator/pkg/hardwareutils => ./pkg/hardwareutils
 
-replace github.com/gophercloud/gophercloud => ../gophercloud
+replace github.com/gophercloud/gophercloud => github.com/haoziwu/gophercloud v0.25.1-0.20220815105514-be8bef4eab11
